@@ -201,13 +201,130 @@ ENTERED runFunction
 The per-lane result `(12, 90, 80, 103)` matches the expected values (`7+5, 21+69, 26+54, 93+10`). The final line is the CLI's own generic printout of the returned `v128`, packed into a single large integer - the `[SIMD-TRACE]` lines are the ones added by this patch, showing the operation broken down lane-by-lane as it actually executes inside the interpreter.
 
 ---
-
+ 
 ## Pre-test 3 - LLVM API
-
-*In progress.*
-
+ 
+**Task:** Write a small C++ program that uses the LLVM API to create two i128 integers and compute `a + b`, and provide the patch and the output.
+ 
+### Program
+ 
+Built using LLVM 14's C++ API (`LLVMContext`, `Module`, `IRBuilder`, `Function`). The program does two things: (1) programmatically constructs LLVM IR for a function `add_i128(i128, i128) -> i128`, and (2) JIT-compiles that IR to real machine code and actually calls it with concrete values, to verify the generated IR is not just well-formed but computes the correct result.
+ 
+Two things worth noting, both discovered while writing this:
+ 
+1. **Constructing the type:** LLVM supports arbitrary-width integers directly via `Type::getInt128Ty(Context)` - no need to hand-roll 128-bit arithmetic; `IRBuilder::CreateAdd` handles the 128-bit add natively once given two i128 values.
+2. **JIT execution of i128 specifically:** LLVM 14's simpler `ExecutionEngine::runFunction` / `GenericValue` interface does not support "full-featured argument passing" for a type like i128 (confirmed by hitting `LLVM ERROR: MCJIT::runFunction does not support full-featured argument passing`). The fix was to fetch the compiled function's raw address with `getFunctionAddress`, cast it to a real C++ function pointer using GCC/Clang's built-in `__int128` type (which matches LLVM's `i128` layout), and call it directly like any normal function pointer.
+`i128_add.cpp`:
+ 
+```cpp
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Verifier.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/TargetSelect.h"
+#include "llvm/ExecutionEngine/ExecutionEngine.h"
+#include "llvm/ExecutionEngine/GenericValue.h"
+ 
+using namespace llvm;
+ 
+int main() {
+    LLVMContext Context;
+    auto ModPtr = std::make_unique<Module>("i128_add", Context);
+    Module *Mod = ModPtr.get();
+ 
+    IRBuilder<> Builder(Context);
+    Type *Int128Ty = Type::getInt128Ty(Context);
+ 
+    std::vector<Type*> ParamTypes = { Int128Ty, Int128Ty };
+    FunctionType *FuncType = FunctionType::get(Int128Ty, ParamTypes, false);
+ 
+    Function *AddFunc = Function::Create(
+        FuncType, Function::ExternalLinkage, "add_i128", Mod);
+ 
+    BasicBlock *EntryBlock = BasicBlock::Create(Context, "entry", AddFunc);
+    Builder.SetInsertPoint(EntryBlock);
+    Argument *A = AddFunc->getArg(0);
+    Argument *B = AddFunc->getArg(1);
+    Value *Sum = Builder.CreateAdd(A, B, "sum");
+    Builder.CreateRet(Sum);
+ 
+    if (verifyFunction(*AddFunc, &llvm::errs())) {
+        llvm::errs() << "Function verification failed!\n";
+        return 1;
+    }
+    llvm::errs() << "Function verified successfully.\n\n";
+    Mod->print(llvm::outs(), nullptr);
+ 
+    // ---- JIT execution ----
+    InitializeNativeTarget();
+    InitializeNativeTargetAsmPrinter();
+ 
+    std::string ErrStr;
+    ExecutionEngine *EE = EngineBuilder(std::move(ModPtr))
+                              .setErrorStr(&ErrStr)
+                              .create();
+    if (!EE) {
+        llvm::errs() << "Failed to create ExecutionEngine: " << ErrStr << "\n";
+        return 1;
+    }
+ 
+    uint64_t FuncAddr = EE->getFunctionAddress("add_i128");
+    typedef __int128 (*AddFuncPtr)(__int128, __int128);
+    AddFuncPtr AddI128 = reinterpret_cast<AddFuncPtr>(FuncAddr);
+ 
+    __int128 ValA = 123456789012345678ULL;
+    __int128 ValB = 987654321098765432ULL;
+ 
+    __int128 SumResult = AddI128(ValA, ValB);
+ 
+    APInt AVal(128, (uint64_t)ValA);
+    APInt BVal(128, (uint64_t)ValB);
+    APInt ResVal(128, (uint64_t)SumResult);
+ 
+    llvm::outs() << "\n--- JIT execution result ---\n";
+    llvm::outs() << "A = " << AVal << "\n";
+    llvm::outs() << "B = " << BVal << "\n";
+    llvm::outs() << "A + B = " << ResVal << "\n";
+ 
+    return 0;
+}
+```
+ 
+Compiled and run with:
+ 
+```bash
+clang++ -g i128_add.cpp `llvm-config-14 --cxxflags --ldflags --libs core mcjit native --system-libs` -o i128_add
+./i128_add
+```
+ 
+Patch file (new-file diff): [`i128_add.patch`](./i128_add.patch)
+ 
+### Output
+ 
+```
+Function verified successfully.
+ 
+; ModuleID = 'i128_add'
+source_filename = "i128_add"
+ 
+define i128 @add_i128(i128 %0, i128 %1) {
+entry:
+  %sum = add i128 %0, %1
+  ret i128 %sum
+}
+ 
+--- JIT execution result ---
+A = 123456789012345678
+B = 987654321098765432
+A + B = 1111111110111111110
+```
+ 
+The printed IR confirms `add_i128` was correctly generated (verified with LLVM's own `verifyFunction`) as a genuine `i128` add. The JIT execution result confirms the generated IR is not just well-formed but computes the correct answer when actually run: `123456789012345678 + 987654321098765432 = 1111111110111111110`, independently checkable by hand.
+ 
 ---
-
+ 
 ## Proposal
-
+ 
+ 
 *In progress.*
