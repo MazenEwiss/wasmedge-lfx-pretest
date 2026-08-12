@@ -1,5 +1,8 @@
 # WasmEdge LFX Mentorship Pre-test - Wide Arithmetic Proposal
 
+**Full repository (code, patches, commit history):** https://github.com/MazenEwiss/wasmedge-lfx-pretest
+
+---
 ## Basic Information
 
 - **Name:** Mazen Hatem Hassan
@@ -326,5 +329,30 @@ The printed IR confirms `add_i128` was correctly generated (verified with LLVM's
  
 ## Proposal
  
+### Availability
+
+My GSoC 2026 term ends in August, before this LFX mentorship term would begin, so there is no scheduling overlap between the two.
+
+My availability varies month to month due to the academic calendar (final-year coursework and, in November, midterm exams). Below is my honest, month-by-month estimate:
+
+| Period | Availability |
+|---|---|
+| **September** | Up to 7 hours/day, 6 days/week (~42 hrs/week) - full availability, no coursework conflicts yet. |
+| **October** | ~4 hours/day, 4–5 days/week (~16–20 hrs/week) - coursework picks up. |
+| **November, week 1** | Same as October (~16–20 hrs/week). |
+| **November, weeks 2–3 (midterms)** | Significantly reduced - 2–3 hours/day, 5 days/week (~10–15 hrs/week) at most, during the midterm week and the week directly before it. |
+| **November, week 4** | Back to full availability - 5 hours/day (~25–35 hrs/week depending on days worked). |
+| **December (if the term extends)** | Limited - at most 1–2 weeks of availability, as this coincides with final college projects and end-of-semester exam preparation. |
+
+I'm flagging the November midterm dip explicitly and in advance so it can be accounted for in the project timeline, rather than surfacing as a surprise mid-term. I plan to front-load higher-effort work in September and early October, and treat the November dip as lighter maintenance/catch-up time rather than a blocker on core deliverables.
+
+### Technical Plan
  
-*In progress.*
+The project requires implementing four instructions - `i64.add128`, `i64.sub128`, `i64.mul_wide_s`, `i64.mul_wide_u` - across WasmEdge's three execution modes (interpreter, AOT, JIT), plus spec-test coverage and documentation. My rough sequencing, based on what I already touched during this pre-test:
+ 
+1. **Interpreter first.** During Pre-test 2 I worked directly in `lib/executor/engine/engine.cpp`'s opcode `switch`, so I already know where and how new SIMD/arithmetic opcodes get dispatched in the interpreter. I'd implement all four instructions here first, since it's the execution mode I'm already most comfortable navigating, and because interpreter correctness is the easiest to verify directly against the wide-arithmetic spec tests before moving to compiled paths.
+2. **AOT next.** During Pre-test 3 I used LLVM's `IRBuilder` API directly to construct IR for a 128-bit add, which is essentially the same job WasmEdge's AOT compiler does when it lowers a Wasm instruction to LLVM IR (I saw this path earlier while grepping for `I32x4__add`, which also appears in `lib/llvm/compiler/vectorInstr.cpp` and `function_compiler.cpp`). I'd extend those files to emit the correct LLVM IR for each of the four instructions, reusing the same `CreateAdd`/`CreateSub`/`CreateMul`-style calls, adapted for 128-bit-wide semantics and the signed/unsigned distinction in the two multiply variants.
+3. **JIT last.** WasmEdge's JIT mode shares much of its lowering logic with AOT, so I'd expect this to be the smallest incremental step once AOT is working - mainly validating that the same code paths behave correctly when compiled just-in-time rather than ahead-of-time.
+4. **Spec tests and documentation throughout**, rather than as a final step - running the relevant WebAssembly spec tests after each execution mode is implemented, not only at the end, so regressions are caught early. Documentation in the WasmEdge/docs repo would be written alongside each mode's implementation while the details are fresh, rather than reconstructed afterward.
+I'd plan to front-load the interpreter and AOT implementation work into September and early October (my highest-availability period), use the November dip for spec-test coverage, review feedback, and documentation (lower-intensity work that tolerates interruption better), and reserve the final weeks for polish and any remaining edge cases (e.g. overflow behavior in the signed/unsigned multiply variants).
+ 
